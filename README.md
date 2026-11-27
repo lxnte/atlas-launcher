@@ -43,19 +43,23 @@ Atlas is a game library for Windows. Every game you own — your whole Steam acc
 <table>
   <tr>
     <td width="50%"><img src="gifs/2-profile.gif" alt="Profile setup"><br><sub><b>Set up your profile</b> — name, avatar and background, with a live preview.</sub></td>
-    <td width="50%"><img src="gifs/3-library.gif" alt="Steam library found"><br><sub><b>Your Steam library</b> — found and counted automatically.</sub></td>
+    <td width="50%"><img src="gifs/3-pick-your-look.gif" alt="Pick your look"><br><sub><b>Pick your look</b> — 8 themes that tint the whole app, plus OLED black.</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="gifs/5-make-steam-lighter.gif" alt="Make Steam lighter"><br><sub><b>Make Steam lighter</b> — optimize Steam right from the setup.</sub></td>
-    <td width="50%"><img src="gifs/6-all-set.gif" alt="Setup finale"><br><sub><b>All set</b> — your games fill the circle.</sub></td>
+    <td width="50%"><img src="gifs/4-library.gif" alt="Steam library found"><br><sub><b>Your Steam library</b> — found and counted automatically.</sub></td>
+    <td width="50%"><img src="gifs/5-when-you-play.gif" alt="When you play"><br><sub><b>When you play</b> — close or minimize Atlas, so your game gets the whole PC.</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="gifs/7-into-library.gif" alt="Library"><br><sub><b>The library</b> — recent games, collections and every game you own.</sub></td>
-    <td width="50%"><img src="gifs/8-profile-page.gif" alt="Profile page"><br><sub><b>Your profile</b> — total hours, most played and recent activity.</sub></td>
+    <td width="50%"><img src="gifs/6-make-steam-lighter.gif" alt="Make Steam lighter"><br><sub><b>Make Steam lighter</b> — optimize Steam right from the setup.</sub></td>
+    <td width="50%"><img src="gifs/7-all-set.gif" alt="Setup finale"><br><sub><b>All set</b> — your games fill the circle.</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="gifs/9-optimize-steam.gif" alt="Optimize Steam"><br><sub><b>Optimize Steam</b> — see what's active, turn anything on or off.</sub></td>
-    <td width="50%"><img src="gifs/10-launch-options.gif" alt="Launch options"><br><sub><b>Launch options</b> — presets and explained options, tuned to your monitor.</sub></td>
+    <td width="50%"><img src="gifs/8-into-library.gif" alt="Library"><br><sub><b>The library</b> — recent games, collections and every game you own.</sub></td>
+    <td width="50%"><img src="gifs/9-profile-page.gif" alt="Profile page"><br><sub><b>Your profile</b> — total hours, most played and recent activity.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="gifs/10-optimize-steam.gif" alt="Optimize Steam"><br><sub><b>Optimize Steam</b> — see what's active, turn anything on or off.</sub></td>
+    <td width="50%"><img src="gifs/11-launch-options.gif" alt="Launch options"><br><sub><b>Launch options</b> — presets and explained options, tuned to your monitor.</sub></td>
   </tr>
 </table>
 ### Features

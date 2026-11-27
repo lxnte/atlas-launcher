@@ -9,8 +9,6 @@ GameLauncher/
 icon/preview.html
 icon/preview.png
 icon/atlas.svg
-# old recordings (only the current set is published)
-gifs/5-all-set.gif
 
 # never commit signing keys
 *.key

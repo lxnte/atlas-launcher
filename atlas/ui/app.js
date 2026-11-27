@@ -776,6 +776,9 @@ function viewGame(v, g) {
   bFav.onclick = () => toggleFav(g);
   bar.append(bGear, bInfo, bFav);
   v.appendChild(bar);
+  if (g.kind === 'steam' && (S.downloads || []).some(d => d.appId === g.appId)) {
+    const gd = frag(`<div class="game-dl" data-key="${g.key}"></div>`); v.appendChild(gd); setTimeout(paintDownloads);
+  }
 
   const links = document.createElement('div'); links.className = 'links';
   const link = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; links.appendChild(b); };
@@ -945,18 +948,49 @@ async function changeBanner() {
   if (!p) return;
   S.config.profile = Object.assign(S.config.profile || {}, { banner: p }); save(); render(true);
 }
+/** Edit profile: live preview on the left, Steam-style fields on the right. Nothing changes until Save. */
 function editProfile() {
-  const body = frag(`<div><div class="field"><label>Name</label><input class="inp" maxlength="32"></div>
-    <div class="row" style="flex-wrap:wrap"><button class="btn" data-a="av">${I.camera} Change picture</button><button class="btn" data-a="bn">${I.image} Change banner</button><button class="btn ghost" data-a="rm">Remove picture</button><button class="btn ghost" data-a="rb">Remove banner</button></div></div>`);
-  const inp = body.querySelector('input'); inp.value = S.config.profile?.name || '';
-  body.querySelector('[data-a=av]').onclick = changeAvatar;
-  body.querySelector('[data-a=bn]').onclick = changeBanner;
-  body.querySelector('[data-a=rm]').onclick = () => { delete S.config.profile.avatar; save(); refresh(); };
-  body.querySelector('[data-a=rb]').onclick = () => { delete S.config.profile.banner; save(); refresh(); };
-  modal({ title: 'Edit profile', body, foot: [
+  const p = S.config.profile || {};
+  const draft = { name: p.name || '', avatar: p.avatar || null, banner: p.banner || null };
+  const body = frag(`<div class="ep">
+    <div class="ep-prev">
+      <div class="pcard"><div class="bn"><div class="ep-hover"><button data-a="bn">${I.image} Change</button><button data-a="rb" title="Remove background">${I.trash}</button></div></div>
+        <div class="who"><div class="av"><span class="ini"></span><div class="ep-hover round-h"><button data-a="av" title="Change picture">${I.camera}</button></div></div><div><b class="pn"></b><small>Atlas member since ${fmtDate(p.createdAt, true)}</small></div></div></div>
+      <small class="ep-note">Live preview — this is how your profile looks.</small>
+    </div>
+    <div class="sform">
+      <div class="field"><label>Profile name</label><input class="sinput" maxlength="32" spellcheck="false" placeholder="Enter a profile name"></div>
+      <div class="field"><label>Avatar</label><div class="sbtns"><button class="sbtn" data-a="av2">${I.camera} Upload avatar</button><button class="sbtn ghost-s" data-a="rm">Remove</button></div><div class="hintline">A square picture looks best.</div></div>
+      <div class="field"><label>Profile background</label><div class="sbtns"><button class="sbtn" data-a="bn2">${I.image} Upload background</button><button class="sbtn ghost-s" data-a="rb2">Remove</button></div><div class="hintline">A wide image, at least 1600 px across.</div></div>
+    </div></div>`);
+  const inp = body.querySelector('input'); inp.value = draft.name;
+  const paint = () => {
+    body.querySelector('.pn').textContent = draft.name || 'Your name';
+    body.querySelector('.ini').textContent = (draft.name || '?').slice(0, 1).toUpperCase();
+    const setImg = (box, src) => { box.querySelectorAll(':scope > img').forEach(x => x.remove()); const im = new Image(); im.src = src; box.prepend(im); };
+    setImg(body.querySelector('.bn'), draft.banner ? fileSrc(draft.banner) : 'default-banner.jpg');
+    const av = body.querySelector('.av'); av.querySelectorAll(':scope > img').forEach(x => x.remove());
+    if (draft.avatar) { const im = new Image(); im.src = fileSrc(draft.avatar); av.prepend(im); }
+    body.querySelector('[data-a=rm]').disabled = !draft.avatar;
+    body.querySelector('[data-a=rb2]').disabled = !draft.banner;
+  };
+  inp.oninput = () => { draft.name = inp.value.trim(); inp.classList.remove('bad'); paint(); };
+  const pickAv = async () => { const x = await invoke('pick_avatar', { kind: 'avatar' }); if (x) { draft.avatar = x; paint(); } };
+  const pickBn = async () => { const x = await invoke('pick_avatar', { kind: 'banner' }); if (x) { draft.banner = x; paint(); } };
+  body.querySelector('[data-a=av]').onclick = pickAv; body.querySelector('[data-a=av2]').onclick = pickAv;
+  body.querySelector('[data-a=bn]').onclick = pickBn; body.querySelector('[data-a=bn2]').onclick = pickBn;
+  body.querySelector('[data-a=rm]').onclick = () => { draft.avatar = null; paint(); };
+  body.querySelector('[data-a=rb]').onclick = body.querySelector('[data-a=rb2]').onclick = () => { draft.banner = null; paint(); };
+  paint();
+  modal({ title: 'Edit profile', body, cls: 'wide', foot: [
     { label: 'Cancel', cls: 'ghost' },
-    { label: 'Save', cls: 'primary', onClick: c => { const n = inp.value.trim(); if (!n) return inp.focus(); S.config.profile.name = n; save(); refresh(); c(); } },
+    { label: 'Save changes', cls: 'primary', onClick: c => {
+      if (!draft.name) { inp.classList.add('bad'); return inp.focus(); }
+      S.config.profile = Object.assign(S.config.profile || {}, { name: draft.name, avatar: draft.avatar, banner: draft.banner });
+      save(); topSig = ''; c(); render(S.view === 'profile'); toast('Profile saved.');
+    } },
   ] });
+  setTimeout(() => inp.focus(), 80);
 }
 
 /* ---------- add / properties ---------- */
@@ -1052,6 +1086,172 @@ function properties(g) {
     ],
   });
 }
+/* ---------- Steam friends ---------- */
+let friendsCache = null, friendsTimer = null, friendsErr = '';
+const PSTATE = { 0: 'Offline', 1: 'Online', 2: 'Busy', 3: 'Away', 4: 'Snooze', 5: 'Looking to trade', 6: 'Looking to play' };
+async function loadFriends() {
+  const key = S.config?.settings?.steamApiKey;
+  if (!key) { friendsCache = null; updateFriendCount(); return; }
+  try { friendsCache = await invoke('steam_friends', { key }); friendsErr = ''; }
+  catch (e) { friendsErr = String(e); }
+  updateFriendCount();
+  const p = document.querySelector('.friends'); if (p) renderFriends(p);
+}
+function updateFriendCount() {
+  const n = (friendsCache || []).filter(f => f.state > 0).length;
+  const c = $('#frCount'); if (c) c.textContent = n ? n : '';
+}
+function toggleFriends() {
+  const open = document.querySelector('.friends');
+  if (open) { open.classList.add('out'); clearInterval(friendsTimer); setTimeout(() => open.remove(), 260); $('#frBtn').classList.remove('on'); return; }
+  const p = frag('<aside class="friends"></aside>');
+  document.body.appendChild(p); $('#frBtn').classList.add('on');
+  renderFriends(p); loadFriends();
+  friendsTimer = setInterval(loadFriends, 60000);
+}
+function renderFriends(p) {
+  const key = S.config.settings.steamApiKey;
+  const head = `<div class="fr-head"><b>Friends</b><div>${key ? `<button class="round sm" data-a="refresh" title="Refresh">${I.refresh}</button><button class="round sm" data-a="key" title="Change API key">${I.gear}</button>` : ''}<button class="round sm" data-a="close" title="Close">${I.x}</button></div></div>`;
+  if (!key || p.dataset.editKey) {
+    p.innerHTML = head + `<div class="fr-setup">
+      <p>See who's online and what they're playing, right in Atlas. It uses Steam's official API with <b>your own key</b>, which stays on this PC.</p>
+      <ol><li><button class="link" data-a="apikey">Open Steam's API key page ${I.ext || ''}</button></li>
+      <li>For <b>Domain Name</b> type <code>localhost</code>, accept and click <b>Register</b>.</li>
+      <li>Copy the key and paste it here:</li></ol>
+      <input class="inp mono-inp" placeholder="Your Steam Web API key" spellcheck="false" maxlength="40">
+      <button class="btn primary" data-a="save">Show my friends</button>
+      <small>Your friends list needs to be visible: Steam → Profile → Edit Profile → Privacy Settings → Friends List: Public.</small></div>`;
+    const inp = p.querySelector('input'); inp.value = key || '';
+    p.querySelector('[data-a=apikey]').onclick = () => invoke('open_url', { url: 'https://steamcommunity.com/dev/apikey' }).catch(e => toast(String(e), true));
+    p.querySelector('[data-a=save]').onclick = async () => {
+      const k = inp.value.trim(); if (!k) return inp.focus();
+      S.config.settings.steamApiKey = k; save(true); delete p.dataset.editKey;
+      p.querySelector('[data-a=save]').textContent = 'Loading…'; await loadFriends();
+      if (friendsErr) toast(friendsErr, true);
+    };
+  } else {
+    const list = friendsCache || [];
+    const ing = list.filter(f => f.game).sort((a, b) => a.name.localeCompare(b.name));
+    const on = list.filter(f => !f.game && f.state > 0).sort((a, b) => a.name.localeCompare(b.name));
+    const off = list.filter(f => !f.game && !f.state).sort((a, b) => (b.lastOnline || 0) - (a.lastOnline || 0));
+    const rowF = f => `<div class="fr-row ${f.game ? 'ingame' : f.state ? 'online' : 'offline'}" data-id="${esc(f.id)}"><img src="${esc(f.avatar)}" alt=""><div><b>${esc(f.name)}</b><small>${f.game ? esc(f.game) : f.state ? PSTATE[f.state] || 'Online' : f.lastOnline ? `Last online ${fmtDate(f.lastOnline)}` : 'Offline'}</small></div></div>`;
+    const grp = (t, a) => a.length ? `<div class="fr-grp">${t} <span>(${a.length})</span></div>${a.map(rowF).join('')}` : '';
+    p.innerHTML = head + (friendsErr ? `<div class="fr-err">${esc(friendsErr)}</div>` : '') +
+      (friendsCache ? `<div class="fr-list">${grp('In game', ing)}${grp('Online', on)}${grp('Offline', off)}${list.length ? '' : '<div class="fr-empty">No friends to show.</div>'}</div>` : '<div class="fr-empty">Loading your friends…</div>');
+    p.querySelectorAll('.fr-row').forEach(r => r.onclick = e => showMenu(e.clientX, e.clientY, [
+      { label: 'Message on Steam', icon: I.edit, action: () => invoke('steam_action', { action: 'message', appId: r.dataset.id }).catch(x => toast(String(x), true)) },
+      { label: 'View profile', icon: I.user, action: () => invoke('steam_action', { action: 'profile', appId: r.dataset.id }).catch(x => toast(String(x), true)) },
+    ]));
+  }
+  const A = n => p.querySelector(`[data-a=${n}]`);
+  A('close').onclick = toggleFriends;
+  if (A('refresh')) A('refresh').onclick = () => loadFriends();
+  if (A('key')) A('key').onclick = () => { p.dataset.editKey = '1'; renderFriends(p); };
+}
+
+/* ---------- Steam downloads ---------- */
+const dlPrev = {}; // appId -> { done, at, speed } for live speed
+function trackDownloads(list) {
+  const now = Date.now();
+  S.downloads = (list || []).map(d => {
+    const p = dlPrev[d.appId];
+    let speed = p?.speed || 0;
+    if (p && now > p.at && d.done >= p.done) speed = (d.done - p.done) / ((now - p.at) / 1000) * .6 + speed * .4;
+    dlPrev[d.appId] = { done: d.done, at: now, speed };
+    return { ...d, speed: d.state === 'downloading' ? speed : 0 };
+  });
+  paintDownloads();
+}
+const fmtSpeed = b => b > 1048576 ? `${(b / 1048576).toFixed(1)} MB/s` : b > 1024 ? `${Math.round(b / 1024)} KB/s` : '—';
+function fmtEta(d) {
+  if (!d.speed || d.speed < 1024 || !d.total) return '';
+  const s = (d.total - d.done) / d.speed;
+  return s < 60 ? 'less than a minute left' : s < 3600 ? `${Math.round(s / 60)} min left` : `${(s / 3600).toFixed(1)} h left`;
+}
+const dlLabel = { downloading: 'Downloading', paused: 'Paused', queued: 'Update queued', installing: 'Installing' };
+/** Bottom-left download bar (like Steam's) + the progress block on a game's page. */
+function paintDownloads() {
+  const list = S.downloads || [];
+  let bar = document.querySelector('.dlbar');
+  if (!list.length) { bar?.remove(); }
+  else {
+    if (!bar) { bar = frag('<div class="dlbar"></div>'); document.querySelector('.side-bottom').before(bar); }
+    const d = list.find(x => x.state === 'downloading') || list[0];
+    const pct = d.total ? Math.min(100, d.done / d.total * 100) : 0;
+    const g = byKey('s' + d.appId) || { appId: d.appId, name: d.name, assets: {} };
+    bar.innerHTML = `<div class="dl-ic"></div><div class="dl-t"><b></b><small>${dlLabel[d.state]}${d.state === 'downloading' ? ` · ${fmtSpeed(d.speed)}` : ''} · ${Math.floor(pct)}%${list.length > 1 ? ` · +${list.length - 1} more` : ''}</small><div class="dl-bar ${d.state}"><i style="width:${pct}%"></i></div></div>`;
+    bar.querySelector('b').textContent = d.name || g.name;
+    bar.querySelector('.dl-ic').appendChild(iconEl(g));
+    bar.onclick = () => go('game', { sel: 's' + d.appId });
+  }
+  const box = document.querySelector('.game-dl');
+  if (box) {
+    const d = list.find(x => 's' + x.appId === box.dataset.key);
+    if (!d) { box.remove(); return; }
+    const pct = d.total ? Math.min(100, d.done / d.total * 100) : 0;
+    box.innerHTML = `<div class="gd-top"><b>${dlLabel[d.state]}</b><span>${Math.floor(pct)}%</span></div><div class="dl-bar big ${d.state}"><i style="width:${pct}%"></i></div>
+      <div class="gd-meta">${fmtSize(d.done)} of ${fmtSize(d.total)}${d.state === 'downloading' ? ` · ${fmtSpeed(d.speed)} · ${fmtEta(d)}` : ''}</div>`;
+  }
+}
+
+/* ---------- backup ---------- */
+async function exportBackup() {
+  await save(true);
+  try {
+    const p = await invoke('export_backup');
+    if (p) toast(`Backup saved: ${p.split(/[\\/]/).pop()}`);
+  } catch (e) { toast(String(e), true); }
+}
+/** Restores a backup and reloads Atlas with it. `ask` shows a confirmation first. */
+async function importBackup(ask) {
+  if (ask && !await confirmDlg('Import a backup?', 'Your current profile, play time, collections, notes and settings are replaced by the ones in the backup. A copy of what you have now is kept in your data folder.', 'Choose backup')) return false;
+  try {
+    const cfg = await invoke('import_backup');
+    if (!cfg) return false;
+    S.uninstalling = true; // stop any pending save from overwriting what was just restored
+    toast('Backup restored — reloading…');
+    setTimeout(() => location.reload(), 700);
+    return true;
+  } catch (e) { toast(String(e), true); return false; }
+}
+
+/* ---------- themes ---------- */
+// name, accent, light accent, gradient start, gradient end, and the whole UI's tint:
+// [title bar, sidebar top, sidebar bottom, main background, glow, gradient top, middle, bottom, settings page, settings nav]
+const THEMES = {
+  blue:   ['Steam Blue', '#1a9fff', '#66c0f4', '#47bfff', '#1a44c2', ['#171a21', '#23262e', '#1c1f25', '#1b2838', '#2a4560', '#1f2d3f', '#182231', '#151d29', '#1b1d23', '#212329']],
+  green:  ['Emerald', '#2fb36b', '#7ee2a8', '#52d48a', '#147a44', ['#121915', '#1d2621', '#171f1b', '#152620', '#1f4d37', '#192d23', '#13221b', '#0f1a15', '#161c19', '#1b231f']],
+  red:    ['Crimson', '#e5484d', '#ff9b9b', '#ff6b6b', '#a3262b', ['#1a1314', '#271d1f', '#201719', '#26181b', '#4d2329', '#2c1b1f', '#211518', '#1a1113', '#1d1718', '#241c1e']],
+  purple: ['Violet', '#8b5cf6', '#c4b5fd', '#a78bfa', '#5b21b6', ['#16131d', '#221e2c', '#1b1824', '#1e1931', '#3b2b5f', '#241d38', '#1a162b', '#141022', '#1a1820', '#211e29']],
+  orange: ['Amber', '#f08c1a', '#ffc46b', '#ffab40', '#b4530a', ['#1a1611', '#27211a', '#201b15', '#261d14', '#4f3618', '#2b2118', '#211912', '#19140e', '#1d1a16', '#25211b']],
+  pink:   ['Rose', '#e64f97', '#f9a8d4', '#f472b6', '#9d174d', ['#1a1318', '#281d25', '#21171f', '#271827', '#4f2347', '#2d1b2a', '#221520', '#1a1018', '#1d171b', '#251d23']],
+  cyan:   ['Ice', '#11b5d6', '#7ee6f7', '#3fd2ec', '#0b6f87', ['#11191b', '#1b2629', '#162023', '#13252a', '#1c4955', '#172c31', '#122327', '#0e1b1e', '#161c1e', '#1b2427']],
+  gold:   ['Gold', '#d4a72c', '#f2d982', '#e8c254', '#94700f', ['#1a1810', '#27241a', '#201d14', '#24200f', '#4d4318', '#2a2614', '#201d10', '#19160c', '#1d1b15', '#25221a']],
+};
+const hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)).join(', ');
+const THEME_VARS = ['--tb', '--side-1', '--side-2', '--bg', '--bg-glow', '--bg-top', '--bg-mid', '--bg-bottom', '--panel-bg', '--nav-bg'];
+function applyTheme() {
+  const st = S.config?.settings || {};
+  const t = THEMES[st.accent] || THEMES.blue, r = document.documentElement.style;
+  r.setProperty('--accent', t[1]); r.setProperty('--accent-2', t[2]);
+  r.setProperty('--inst-a', t[3]); r.setProperty('--inst-b', t[4]);
+  r.setProperty('--accent-rgb', hexRgb(t[1])); r.setProperty('--accent2-rgb', hexRgb(t[2]));
+  THEME_VARS.forEach((v, i) => r.setProperty(v, t[5][i]));
+  document.body.classList.toggle('oled', !!st.oled);
+}
+/** Swatch with a tiny preview of the theme's whole look (background, sidebar, accent). */
+const swatchHtml = (k, t, on) => `<button class="swatch ${on ? 'on' : ''}" data-k="${k}" style="--sw:${t[1]};--sw2:${t[2]};--pv-bg:${t[5][3]};--pv-side:${t[5][1]};--pv-glow:${t[5][4]}"><span class="pv"><span class="pv-side"></span><span class="pv-main"><span class="pv-bar"></span><span class="pv-cards"><i></i><i></i><i></i></span></span></span><span class="sw-name"><i></i>${t[0]}</span></button>`;
+
+const oledCard = on => `<div class="oled-card ${on ? 'on' : ''}" data-a="oled"><span class="oc-ic"><i></i></span><div><b>OLED black${tip('oled')}</b><small>Pure black backgrounds — deeper contrast, and less power on OLED screens</small></div><span class="stoggle ${on ? 'on' : ''}"><i></i></span></div>`;
+function wireOled(card, settings, persist) {
+  card.onclick = () => {
+    settings.oled = !settings.oled;
+    card.classList.toggle('on', settings.oled); card.querySelector('.stoggle').classList.toggle('on', settings.oled);
+    if (persist) save();
+    applyTheme();
+  };
+}
+
 /* ---------- (i) explanations for every option ---------- */
 const TIPS = {
   gameBoost: "While a Steam game is running, Atlas drops Steam's interface (steamwebhelper — the web browser Steam uses for its store, library and chat) to the lowest CPU priority and hands its memory back to Windows, so your game can use it. Steam's core — licences, multiplayer, anti-cheat and cloud saves — is never touched. When you close the game, everything goes back to normal on its own.",
@@ -1063,6 +1263,8 @@ const TIPS = {
   discord: "Shows “Playing Atlas” on your Discord profile while you browse the library, and the game you launched from Atlas while you play it. Everything goes through the Discord app on your PC — nothing is sent anywhere else.",
   onLaunch: "What Atlas does after you press Play. “Close Atlas” frees every bit of memory Atlas uses while you play; your hours are still counted by the small helper. “Minimize” keeps Atlas in the taskbar, “Do nothing” leaves it on screen.",
   autoUpdate: "When Atlas starts, it checks GitHub for a newer version and shows an “Update available” button if there is one. Nothing is installed until you click it. Every update is signed, so Atlas only installs versions published by its author.",
+  backup: 'Saves a single .atlasbackup file with your profile (name, picture and background), play time, first and last played dates, collections, favorites, notes, launch options and settings. Copy it to a new PC and use Import — or “Restore a backup” in the first-run setup — to get everything back. Your games are not part of it.',
+  oled: 'Switches every background to pure black. On OLED and AMOLED screens black pixels are switched off, which looks deeper and uses less power. On normal screens it simply gives more contrast.',
   showUninstalled: "Shows every game on your Steam account, not only the installed ones, so you can install them from Atlas with one click.",
   // launch options
   '-fullscreen': 'Runs the game in exclusive fullscreen instead of a borderless window. Windows hands the screen straight to the game, which gives the lowest input lag and the most stable frame times. Alt-Tab is a little slower.',
@@ -1221,10 +1423,10 @@ function settings(startTab = 'account') {
   const s = S.config.settings;
   const p = S.config.profile || {};
   const tabs = [
-    ['account', 'Account', I.user], ['ingame', 'In-Game', I.play], ['library', 'Library', I.coll],
+    ['account', 'Account', I.user], ['appearance', 'Appearance', I.image], ['ingame', 'In-Game', I.play], ['library', 'Library', I.coll],
     ['steam', 'Steam', I.store], ['updates', 'Updates', I.download], ['data', 'Your Data', I.folder], null, ['uninstall', 'Uninstall', I.trash],
   ];
-  const pg = frag(`<div class="spage"><nav class="snav"><h2>Atlas Settings</h2>${tabs.map(t => t ? `<button data-t="${t[0]}">${t[2]}<span>${t[1]}</span></button>` : '<div class="ssep"></div>').join('')}</nav>
+  const pg = frag(`<div class="spage"><nav class="snav">${tabs.map(t => t ? `<button data-t="${t[0]}">${t[2]}<span>${t[1]}</span></button>` : '<div class="ssep"></div>').join('')}</nav>
     <section class="spanel"></section><button class="sclose" title="Close">${I.x}</button></div>`);
   const panel = pg.querySelector('.spanel');
   const close = () => { pg.classList.add('out'); document.body.classList.remove('in-settings'); window.closeSettings = null; document.removeEventListener('keydown', onKey, true); setTimeout(() => { pg.remove(); presence(); }, 250); };
@@ -1254,6 +1456,17 @@ function settings(startTab = 'account') {
       A('av').onclick = async () => { await changeAvatar(); views.account(b); };
       A('bn').onclick = async () => { await changeBanner(); views.account(b); };
       A('setup').onclick = () => { close(); runSetupAgain(); };
+    },
+    appearance: b => {
+      b.innerHTML = `<h1>Appearance</h1>
+        <div class="ssub" style="margin-top:0">Accent color</div>
+        <div class="swatches">${Object.entries(THEMES).map(([k, t]) => swatchHtml(k, t, (s.accent || 'blue') === k)).join('')}</div>
+        ${oledCard(!!s.oled)}`;
+      b.querySelectorAll('.swatch').forEach(w => w.onclick = () => {
+        s.accent = w.dataset.k; save(); applyTheme();
+        b.querySelectorAll('.swatch').forEach(x => x.classList.toggle('on', x === w));
+      });
+      wireOled(b.querySelector('[data-a=oled]'), s, true);
     },
     ingame: b => {
       b.innerHTML = `<h1>In-Game</h1>
@@ -1326,9 +1539,13 @@ function settings(startTab = 'account') {
     },
     data: b => {
       b.innerHTML = `<h1>Your Data</h1>
+        ${row('Export backup' + tip('backup'), 'One file with your profile, pictures, play time, collections, notes and settings', sbtn('export', 'Export'))}
+        ${row('Import backup', 'Bring everything back from a backup — on this PC or a new one', sbtn('import', 'Import'))}
         ${row('Data folder', `<span class="mono">${esc(S.dataDir)}</span>`, sbtn('open', 'Open Folder'))}
-        <p class="snote">Your profile, play time, notes and collections live only on this PC — nothing is uploaded anywhere. Back up this folder to keep your stats when you change PCs.</p>`;
+        <p class="snote">Your profile, play time, notes and collections live only on this PC — nothing is uploaded anywhere. Export a backup to keep them when you change PCs.</p>`;
       b.querySelector('[data-a=open]').onclick = () => invoke('reveal', { path: S.dataDir });
+      b.querySelector('[data-a=export]').onclick = exportBackup;
+      b.querySelector('[data-a=import]').onclick = () => importBackup(true);
     },
     uninstall: b => {
       b.innerHTML = `<h1>Uninstall</h1>
@@ -1551,6 +1768,7 @@ function setupWizard() {
       { rx: 24, cx: -160, cy: 70, cs: 1.08 },
       { rx: 10, cx: 140, cy: -50, cs: 1.16 },
       { rx: 20, cx: -70, cy: -110, cs: 1.06 },
+      { rx: 12, cx: 60, cy: -80, cs: 1.1 },
       { rx: 18, cx: 120, cy: 90, cs: 1.12 },
       { rx: 6, cx: 0, cy: 30, cs: 1.28 },
     ];
@@ -1576,6 +1794,7 @@ function setupWizard() {
               <div class="field"><label>Profile name</label><input class="sinput" maxlength="32" spellcheck="false" placeholder="Enter a profile name"><div class="hintline">Shown on your profile and in the top bar.</div></div>
               <div class="field"><label>Avatar</label><div class="sbtns"><button class="sbtn" data-a="av2">${I.camera} Upload avatar</button></div></div>
               <div class="field"><label>Profile background</label><div class="sbtns"><button class="sbtn" data-a="bn2">${I.image} Upload background</button></div></div>
+              <div class="restore">Moving from another PC? <button data-a="restore">Restore a backup</button></div>
             </div>`)}
           </div>`,
         mount: el => {
@@ -1589,9 +1808,23 @@ function setupWizard() {
           const pickBn = async () => { const p = await invoke('pick_avatar', { kind: 'banner' }); if (p) { prof.banner = p; setImg(el.querySelector('.bn'), p); } };
           el.querySelector('[data-a=av2]').onclick = pickAv;
           el.querySelector('[data-a=bn2]').onclick = pickBn;
+          el.querySelector('[data-a=restore]').onclick = () => importBackup(false);
           setTimeout(() => inp.focus(), 700);
         },
         valid: el => { if (prof.name) return true; const i = el.querySelector('input'); i.classList.add('bad'); i.focus(); i.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-8px)' }, { transform: 'translateX(8px)' }, { transform: 'translateX(0)' }], { duration: 300 }); return false; },
+      },
+      { // theme: applies live, the setup itself takes the new color
+        render: () => `${st(1, '<h1>Pick your <b>look</b></h1>')}
+          ${st(2, '<p class="lead">Choose an accent color for Atlas. You can change it anytime in Settings.</p>')}
+          ${st(3, `<div class="swatches wiz-sw">${Object.entries(THEMES).map(([k, t]) => swatchHtml(k, t, (S.config.settings.accent || 'blue') === k)).join('')}</div>`)}
+          ${st(4, oledCard(!!S.config.settings.oled))}`,
+        mount: el => {
+          el.querySelectorAll('.swatch').forEach(w => w.onclick = () => {
+            S.config.settings.accent = w.dataset.k; applyTheme();
+            el.querySelectorAll('.swatch').forEach(x => x.classList.toggle('on', x === w));
+          });
+          wireOled(el.querySelector('[data-a=oled]'), S.config.settings, false);
+        },
       },
       { // 2 — library
         render: () => {
@@ -1691,6 +1924,11 @@ function setupWizard() {
             hits++; fill(hits / total); bump();
             if (hits === total) finish();
           }));
+          // "Open my library" waits until the circle is full and "You're all set" has been written
+          bNext.classList.add('locked');
+          const lateS = parseFloat(el.querySelector('.st.late')?.style.getPropertyValue('--late')) || 3.4;
+          const unlock = () => { if (el.isConnected) bNext.classList.remove('locked'); };
+          setTimeout(() => { if (fin.classList.contains('done')) unlock(); else new MutationObserver((m, o) => { if (fin.classList.contains('done')) { o.disconnect(); setTimeout(unlock, 300); } }).observe(fin, { attributes: true }); }, (lateS + 1.1) * 1000);
           if (!covers.length) setTimeout(finish, 900);
           // safety net if some covers failed to load
           setTimeout(() => { if (!fin.classList.contains('done')) finish(); }, 5200);
@@ -1714,7 +1952,7 @@ function setupWizard() {
       bNext.innerHTML = `${s.next || 'Continue'} ${I.arrowR}`;
     }
     async function next() {
-      if (busyStep) return;
+      if (busyStep || bNext.classList.contains('locked')) return;
       const s = steps[idx];
       if (s.valid && !s.valid(cur)) return;
       if (idx === steps.length - 1) return finish();
@@ -1756,7 +1994,8 @@ let lastStatus = '';
 async function refreshStatus() {
   try {
     const st = await invoke('get_status');
-    const sig = JSON.stringify(st);
+    trackDownloads(st.downloads);
+    const sig = JSON.stringify({ stats: st.stats, running: st.running, dl: (st.downloads || []).map(d => d.appId + d.state).join() });
     if (sig === lastStatus) return;
     const first = !lastStatus; lastStatus = sig;
     S.stats = st.stats || {}; S.running = st.running || {};
@@ -1769,9 +2008,10 @@ window.addEventListener('focus', () => {
   if (Date.now() - lastFocusLoad > 60000) { lastFocusLoad = Date.now(); load(false).then(refresh).catch(() => {}); }
 });
 // keep polling even in the background: while you play, Atlas isn't the focused window
-setInterval(refreshStatus, 5000);
+setInterval(refreshStatus, 3000);
 
 /* ---------- wiring ---------- */
+$('#frBtn').onclick = toggleFriends;
 $('#wMin').onclick = () => appWin.minimize();
 $('#wMax').onclick = () => appWin.toggleMaximize();
 $('#wClose').onclick = () => appWin.close();
@@ -1818,11 +2058,16 @@ predecode(['logo.png', 'default-banner.jpg']);
 (async () => {
   $('#scroll').innerHTML = `<div class="section"><div class="skel" style="height:14px;width:180px;margin-bottom:18px"></div><div class="grid">${'<div><div class="skel" style="aspect-ratio:2/3"></div></div>'.repeat(14)}</div></div>`;
   try { await load(false); } catch (e) { toast('Failed to load: ' + e, true); S.config = ensureConfig(null); }
+  applyTheme();
+  loadFriends();
   refreshStatus();
   setTimeout(checkMoved, 1500); // background: games moved to another drive or deleted
   setTimeout(checkForUpdate, 4000); // if automatic updates are on, quietly look for a new signed release
   setTimeout(finishPendingSteamOptimizations, 2500);
   window.addEventListener('focus', finishPendingSteamOptimizations);
+  // the library stays hidden until we know whether the setup comes first, so it never flashes behind it
+  if (!S.config.profile) document.body.classList.add('setup');
+  document.body.classList.remove('booting');
   if (!S.config.profile) {
     render(false);
     await setupWizard();

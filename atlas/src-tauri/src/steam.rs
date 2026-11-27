@@ -41,6 +41,141 @@ pub struct LogoPos {
     pub h: f32,
 }
 
+// ---------------- friends (official Steam Web API, user's own key) ----------------
+
+/// SteamID64 of the account last signed in to Steam on this PC.
+pub fn my_steamid() -> Option<String> {
+    let sp = steam_path()?;
+    let root = read_vdf(&sp.join("config").join("loginusers.vdf"))?;
+    let users = root.get("users")?;
+    let mut best: Option<(String, u64)> = None;
+    for (id, u) in users.entries() {
+        let score = if u.get_str("MostRecent") == Some("1") { u64::MAX } else { u.get_str("Timestamp").and_then(|s| s.parse().ok()).unwrap_or(0) };
+        if best.as_ref().map(|b| score > b.1).unwrap_or(true) {
+            best = Some((id.clone(), score));
+        }
+    }
+    best.map(|b| b.0)
+}
+
+/// Friends with their status and current game. Needs the user's own Web API key and a
+/// friends list that is visible (Steam privacy: Friends List = Public).
+pub fn friends(key: &str) -> Result<Vec<serde_json::Value>, String> {
+    use serde_json::{json, Value};
+    let me = my_steamid().ok_or("Couldn't find your Steam account on this PC.")?;
+    let get = |url: &str, q: &[(&str, &str)]| -> Result<Value, String> {
+        let mut r = ureq::get(url).timeout(std::time::Duration::from_secs(10));
+        for (k, v) in q {
+            r = r.query(k, v);
+        }
+        match r.call() {
+            Ok(resp) => resp.into_json::<Value>().map_err(|e| e.to_string()),
+            Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+                Err("Steam refused the request. Check that the API key is right and that your Friends List is public in Steam's privacy settings.".into())
+            }
+            Err(e) => Err(format!("Couldn't reach Steam: {e}")),
+        }
+    };
+    let list = get("https://api.steampowered.com/ISteamUser/GetFriendList/v1/", &[("key", key), ("steamid", &me), ("relationship", "friend")])?;
+    let ids: Vec<String> = list["friendslist"]["friends"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|f| f["steamid"].as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for chunk in ids.chunks(100) {
+        let joined = chunk.join(",");
+        let s = get("https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/", &[("key", key), ("steamids", &joined)])?;
+        for p in s["response"]["players"].as_array().cloned().unwrap_or_default() {
+            out.push(json!({
+                "id": p["steamid"], "name": p["personaname"], "avatar": p["avatarmedium"],
+                "state": p["personastate"].as_u64().unwrap_or(0),
+                "game": p["gameextrainfo"], "gameId": p["gameid"],
+                "lastOnline": p["lastlogoff"].as_u64().unwrap_or(0) * 1000,
+            }));
+        }
+    }
+    Ok(out)
+}
+
+// ---------------- downloads ----------------
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Download {
+    pub app_id: String,
+    pub name: String,
+    /// "downloading" | "paused" | "queued" | "installing"
+    pub state: &'static str,
+    pub done: u64,
+    pub total: u64,
+}
+
+fn dir_size(d: &Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![d.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&p) else { continue };
+        for e in rd.flatten() {
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(e.path()),
+                Ok(_) => total += e.metadata().map(|m| m.len()).unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+    total
+}
+
+/// Installs and updates Steam is working on right now, read from the app manifests
+/// (StateFlags + byte counters) and the size of steamapps\downloading\<appid>.
+pub fn downloads() -> Vec<Download> {
+    const UPDATE_REQUIRED: u64 = 2;
+    const UPDATE_RUNNING: u64 = 256;
+    const UPDATE_PAUSED: u64 = 512;
+    const UPDATE_STARTED: u64 = 1024;
+    const PREALLOCATING: u64 = 524288;
+    const DOWNLOADING: u64 = 1048576;
+    const STAGING: u64 = 2097152;
+    const COMMITTING: u64 = 4194304;
+    let Some(sp) = steam_path() else { return vec![] };
+    let mut out = Vec::new();
+    for lib in libraries(&sp) {
+        let dir = lib.join("steamapps");
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let fname = e.file_name().to_string_lossy().to_lowercase();
+            if !(fname.starts_with("appmanifest_") && fname.ends_with(".acf")) {
+                continue;
+            }
+            let Some(root) = read_vdf(&e.path()) else { continue };
+            let Some(st) = root.get("AppState") else { continue };
+            let flags: u64 = st.get_str("StateFlags").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let num = |k: &str| st.get_str(k).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            let (mut done, total) = (num("BytesDownloaded"), num("BytesToDownload"));
+            let busy = flags & (UPDATE_RUNNING | UPDATE_STARTED | DOWNLOADING | STAGING | COMMITTING | PREALLOCATING) != 0;
+            let state = if flags & UPDATE_PAUSED != 0 {
+                "paused"
+            } else if flags & (STAGING | COMMITTING) != 0 {
+                "installing"
+            } else if busy {
+                "downloading"
+            } else if flags & UPDATE_REQUIRED != 0 && total > done {
+                "queued"
+            } else {
+                continue;
+            };
+            let id = st.get_str("appid").unwrap_or("").to_string();
+            // Steam only writes the counters every so often: the download folder grows live
+            let live = dir_size(&dir.join("downloading").join(&id));
+            if live > done && live <= total.max(live) {
+                done = live.min(total.max(live));
+            }
+            out.push(Download { app_id: id, name: st.get_str("name").unwrap_or("").to_string(), state, done, total });
+        }
+    }
+    out
+}
+
 /// Launch options the user already set inside Steam for this game (Properties > General).
 pub fn launch_options(app_id: u32) -> String {
     let Some(sp) = steam_path() else { return String::new() };

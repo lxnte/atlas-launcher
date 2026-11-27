@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod backup;
 mod discord;
 mod optimize;
 mod scan;
@@ -52,7 +53,7 @@ async fn get_library(cache: tauri::State<'_, SteamCache>, force: bool) -> Result
 
 #[tauri::command]
 fn get_status() -> Value {
-    json!({ "stats": store::load_stats(), "running": running_now() })
+    json!({ "stats": store::load_stats(), "running": running_now(), "downloads": steam::downloads() })
 }
 
 #[tauri::command]
@@ -143,6 +144,8 @@ fn steam_action(action: String, app_id: String) -> Result<(), String> {
         "guides" => format!("https://steamcommunity.com/app/{app_id}/guides/"),
         "achievements" => format!("https://steamcommunity.com/stats/{app_id}/achievements"),
         "properties" => format!("steam://gameproperties/{app_id}"),
+        "message" => format!("steam://friends/message/{app_id}"),
+        "profile" => format!("https://steamcommunity.com/profiles/{app_id}"),
         _ => return Err("Unknown action".into()),
     };
     winproc::open(&url);
@@ -327,6 +330,42 @@ struct OptReq {
     close: bool,
 }
 
+#[tauri::command]
+async fn steam_friends(key: String) -> Result<Vec<Value>, String> {
+    if key.trim().is_empty() || !key.trim().chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("That doesn't look like a Steam Web API key.".into());
+    }
+    steam::friends(key.trim())
+}
+
+// ---------------- backup ----------------
+
+#[tauri::command]
+async fn export_backup(window: WebviewWindow) -> Result<Option<String>, String> {
+    let name = format!("Atlas backup {}.atlasbackup", chrono_date());
+    let Some(p) = rfd::FileDialog::new().set_parent(&window).set_title("Save your Atlas backup").set_file_name(&name)
+        .add_filter("Atlas backup", &["atlasbackup"]).save_file() else { return Ok(None) };
+    backup::export(&p)?;
+    Ok(Some(p.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+async fn import_backup(window: WebviewWindow) -> Result<Option<Value>, String> {
+    let Some(p) = rfd::FileDialog::new().set_parent(&window).set_title("Choose an Atlas backup")
+        .add_filter("Atlas backup", &["atlasbackup"]).pick_file() else { return Ok(None) };
+    backup::import(&p).map(Some)
+}
+
+/// Today's date as YYYY-MM-DD (local time, no extra crates).
+fn chrono_date() -> String {
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+    unsafe {
+        let mut t = std::mem::zeroed();
+        GetLocalTime(&mut t);
+        format!("{:04}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay)
+    }
+}
+
 /// Refresh rate of the main monitor (Hz), used to suggest -refresh for games. 0 if unknown.
 #[tauri::command]
 fn display_hz() -> u32 {
@@ -487,6 +526,9 @@ fn main() {
             steam_opt_set,
             steam_launch_options,
             display_hz,
+            export_backup,
+            import_backup,
+            steam_friends,
             check_update,
             install_update,
             discord_status,

@@ -1,6 +1,6 @@
 [package]
 name = "atlas"
-version = "1.0.1"
+version = "1.0.2"
 description = "Atlas - every game you own in one place"
 edition = "2021"
 
@@ -12,6 +12,7 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
 winreg = "0.52"
 ureq = { version = "2", features = ["json"] }
 rfd = "0.15"
@@ -23,6 +24,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_WindowsAndMessaging",
   "Win32_System_Registry",
   "Win32_Graphics_Gdi",
+  "Win32_System_SystemInformation",
 ] }
 
 [profile.release]
