@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Atlas</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="titlebar" data-tauri-drag-region>
+    <div class="brand"><img src="logo.png" alt=""><b>ATLAS</b></div>
+    <nav class="nav" id="nav">
+      <button data-v="library" class="on">Library</button>
+      <button data-v="profile" id="navProfile">Profile</button>
+      <button data-v="settings" id="navSettings">Settings</button>
+    </nav>
+    <div class="drag" data-tauri-drag-region></div>
+    <button class="me" id="meBtn"></button>
+    <button class="winbtn" id="wMin" title="Minimize"><svg class="ico" viewBox="0 0 16 16"><path d="M3 8h10"/></svg></button>
+    <button class="winbtn" id="wMax" title="Maximize"><svg class="ico" viewBox="0 0 16 16"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg></button>
+    <button class="winbtn close" id="wClose" title="Close"><svg class="ico" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+  </div>
+
+  <div class="app">
+    <aside class="side">
+      <div class="side-top">
+        <div class="row">
+          <button class="home-btn on" id="homeBtn">
+            <svg class="ico" viewBox="0 0 16 16"><path d="M2.5 7.5L8 3l5.5 4.5V13a.5.5 0 0 1-.5.5H9.5V10h-3v3.5H3a.5.5 0 0 1-.5-.5z"/></svg>Home
+          </button>
+          <button class="sq" id="gridBtn" title="All games grid">
+            <svg class="ico fill" viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>
+          </button>
+        </div>
+        <div class="row">
+          <div class="select"><button id="filterBtn"><span id="filterLbl">All games</span><svg class="ico" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></button></div>
+          <button class="mini" id="recentBtn" title="Sort by recently played"><svg class="ico" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/></svg></button>
+          <button class="mini" id="readyBtn" title="Ready to play only"><svg class="ico" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M6.8 5.6l3.6 2.4-3.6 2.4z" fill="currentColor"/></svg></button>
+        </div>
+        <div class="search">
+          <svg class="ico" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+          <input id="q" placeholder="Search your library" spellcheck="false">
+          <button class="mini" id="sortBtn" title="Sort"><svg class="ico" viewBox="0 0 16 16"><path d="M2.5 4.5h11M4.5 8h7M6.5 11.5h3"/></svg></button>
+        </div>
+      </div>
+      <div class="list" id="list"></div>
+      <div class="side-bottom">
+        <button class="add-btn" id="addBtn"><svg class="ico" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>Add a game</button>
+      </div>
+    </aside>
+    <main class="main"><div class="scroll" id="scroll"></div></main>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+  <script src="app.js"></script>
+</body>
+</html>
